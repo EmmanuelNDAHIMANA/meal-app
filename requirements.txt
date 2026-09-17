@@ -1,0 +1,7 @@
+streamlit>=1.36
+pymysql>=1.1
+sqlalchemy>=2.0
+pandas>=2.2
+openpyxl>=3.1
+bcrypt>=4.1
+plotly>=5.22
