@@ -424,6 +424,9 @@ def build_template(table_key: str) -> bytes:
         ["6.", "Dates: use a real Excel date (YYYY-MM-DD). Numbers: digits only, no units or commas."],
         ["7.", "Leave blank for unknown values. Do not type 'N/A' or '-' in number or date columns."],
         ["8.", "Save as .xlsx and upload it on the table's 'Bulk upload' tab."],
+        ["9.", "Shapefile / Training Modules / Attendance List columns: bulk upload only accepts a text note "
+               "here (e.g. a reference code) — it cannot attach the actual file. To attach the real file, "
+               "use 'Submit one record' for that entry instead; it has a proper file upload button."],
         [],
         ["Note", "Rows that fail validation are never inserted. You get a list of them with the exact reason."],
     ]

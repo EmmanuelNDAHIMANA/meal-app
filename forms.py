@@ -17,6 +17,7 @@ import db
 import schemas
 import templates
 import reference_data as ref
+import filestore
 
 CASCADE_FIRST = {"implementer", "district", "tree_origin"}
 
@@ -125,6 +126,13 @@ def render_form(table_key: str):
                 vals[fl["col"]] = st.selectbox(label, [""] + config.YOUTH_OPTIONS, key=key)
             elif ft == "choice":
                 vals[fl["col"]] = st.selectbox(label, [""] + fl.get("options", []), key=key)
+            elif ft == "file":
+                exts = fl.get("options") or None
+                hint = f" (.{', .'.join(exts)})" if exts else ""
+                vals[fl["col"]] = st.file_uploader(
+                    fl["label"] + hint, type=exts, key=key,
+                    help=f"Max {filestore.MAX_FILE_MB} MB. Renamed automatically with the upload date and your username.",
+                )
             elif ft == "int":
                 v = st.number_input(label, min_value=0, step=1, value=None,
                                     placeholder="leave empty if unknown", key=key)
@@ -148,12 +156,32 @@ def render_form(table_key: str):
 
     st.divider()
     if st.button("✅ Submit record", type="primary", key=f"{pfx}_submit"):
+        username = st.session_state["user"]["username"]
+
+        # Save any uploaded files first, replacing the widget's UploadedFile
+        # object with the generated filename (date + username baked in).
+        file_save_failed = False
+        for fl in cfg["fields"]:
+            if fl["ftype"] != "file":
+                continue
+            uploaded = vals.get(fl["col"])
+            if uploaded is None:
+                vals[fl["col"]] = None
+                continue
+            try:
+                vals[fl["col"]] = filestore.save_file(uploaded, username)
+            except Exception as e:
+                st.error(f"Could not save '{fl['label']}': {e}")
+                file_save_failed = True
+        if file_save_failed:
+            return
+
         errs = _validate(cfg, {k: _clean(v) for k, v in vals.items()}, strict_ref=True)
         if errs:
             st.error("Fix these first:\n" + "\n".join(f"- {e}" for e in errs))
             return
         rec = {k: _clean(v) for k, v in vals.items()}
-        rec["created_by"] = st.session_state["user"]["username"]
+        rec["created_by"] = username
         rec["source"] = "manual"
         try:
             placeholders = ", ".join(f":{k}" for k in rec)
@@ -481,3 +509,32 @@ def render_dashboard(table_key: str):
         file_name=f"{cfg['table']}_filtered.csv",
         key=f"dl_{table_key}",
     )
+
+    # ---------------------------------------------------- attachments
+    file_fields = [fl for fl in cfg["fields"] if fl["ftype"] == "file"]
+    if file_fields:
+        st.divider()
+        with st.expander("📎 Download an attached file"):
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                chosen_label = st.selectbox(
+                    "Field", [fl["label"] for fl in file_fields], key=f"att_field_{table_key}")
+            chosen_col = next(fl["col"] for fl in file_fields if fl["label"] == chosen_label)
+            options = sorted(fdf[chosen_col].dropna().unique()) if chosen_col in fdf.columns else []
+            with fc2:
+                chosen_file = st.selectbox("File", options, key=f"att_file_{table_key}") if options else None
+            if not options:
+                st.caption("No files uploaded for this field yet (in the current filter).")
+            elif chosen_file:
+                data = filestore.read_file(chosen_file)
+                if data is None:
+                    st.warning(
+                        "This file isn't on disk right now. If the app was recently "
+                        "redeployed, uploaded files don't survive that on the current "
+                        "hosting setup — see the note in filestore.py."
+                    )
+                else:
+                    st.download_button(
+                        f"⬇️ Download {chosen_file}", data=data, file_name=chosen_file,
+                        key=f"att_dl_{table_key}",
+                    )

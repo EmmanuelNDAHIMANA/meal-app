@@ -22,6 +22,18 @@ CREATE TABLE IF NOT EXISTS `users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
+REPORTS_SQL = """
+CREATE TABLE IF NOT EXISTS `reports` (
+    id                INT AUTO_INCREMENT PRIMARY KEY,
+    title             VARCHAR(255),
+    stored_filename   VARCHAR(255) NOT NULL UNIQUE,
+    original_filename VARCHAR(255) NOT NULL,
+    uploaded_by       VARCHAR(100),
+    uploaded_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_reports_uploaded_by` (`uploaded_by`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
 
 def build_sql(table_key: str) -> str:
     cfg = schemas.TABLES[table_key]
@@ -52,6 +64,8 @@ def main():
     with engine.begin() as conn:
         print("→ users")
         conn.execute(text(USERS_SQL))
+        print("→ reports")
+        conn.execute(text(REPORTS_SQL))
         for key in schemas.TABLE_ORDER:
             print(f"→ {schemas.TABLES[key]['table']}")
             conn.execute(text(build_sql(key)))
