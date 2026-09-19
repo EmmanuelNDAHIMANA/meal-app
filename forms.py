@@ -18,6 +18,7 @@ import schemas
 import templates
 import reference_data as ref
 import filestore
+import mapwidget
 
 CASCADE_FIRST = {"implementer", "district", "tree_origin"}
 
@@ -73,11 +74,19 @@ def render_form(table_key: str):
     cols = st.columns(2)
     i = 0
     for fl in cfg["fields"]:
-        c = cols[i % 2]
-        i += 1
         key = f"{pfx}_{fl['col']}"
         label = fl["label"] + (" *" if fl["req"] else "")
         ft = fl["ftype"]
+
+        if ft == "gps":
+            # Map picker needs full width, so it breaks out of the 2-column
+            # grid rather than sharing a narrow column like the other fields.
+            vals[fl["col"]] = mapwidget.render_gps_picker(label, key=key)
+            st.divider()
+            continue
+
+        c = cols[i % 2]
+        i += 1
 
         with c:
             if ft == "project":
@@ -147,8 +156,6 @@ def render_form(table_key: str):
                 vals[fl["col"]] = st.text_area(label, key=key)
             elif ft == "phone":
                 vals[fl["col"]] = st.text_input(label, placeholder="07xxxxxxxx", key=key)
-            elif ft == "gps":
-                vals[fl["col"]] = st.text_input(label, placeholder="-1.9441, 30.0619", key=key)
             elif ft == "link":
                 vals[fl["col"]] = st.text_input(label, placeholder="https://… or file path", key=key)
             else:
