@@ -204,6 +204,25 @@ def render_form(table_key: str):
 
 # ------------------------------------------------------------- validation
 
+def _normalize_location_casing(rec: dict):
+    """
+    District/Sector/Cell/Village accept any case on bulk upload, but before
+    saving we rewrite them to match the reference file's actual casing, so
+    'KIGALI' and 'Kigali' don't end up as two different values in dashboard
+    filters and charts. Only touches rows that already passed validation
+    (i.e. a case-insensitive match is guaranteed to exist).
+    """
+    d, s, c = rec.get("district"), rec.get("sector"), rec.get("cell")
+    if any(_blank(x) for x in (d, s, c)):
+        return
+    v = rec.get("village")
+    canon = ref.canonical_location(d, s, c, v if not _blank(v) else "")
+    if canon:
+        rec["district"], rec["sector"], rec["cell"] = canon[0], canon[1], canon[2]
+        if not _blank(v):
+            rec["village"] = canon[3]
+
+
 def _validate(cfg, rec: dict, strict_ref: bool = True) -> list[str]:
     errs: list[str] = []
     by_type = {fl["ftype"]: fl["col"] for fl in cfg["fields"]}
@@ -356,6 +375,7 @@ def render_upload(table_key: str):
             bad.append({"Excel row": excel_row, "Problems": "; ".join(errs),
                         **{k: v for k, v in rec.items()}})
         else:
+            _normalize_location_casing(rec)
             good.append(rec)
 
     m1, m2, m3 = st.columns(3)
@@ -394,6 +414,40 @@ def render_upload(table_key: str):
 
 
 # -------------------------------------------------------------- dashboard
+
+def _dedup_area_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapse rows that represent the same physical site down to one row, so
+    Area (ha) isn't summed once per tree species/type recorded there (these
+    tables have one row per species planted at a site, all sharing the same
+    area). Two rows count as the same site when Owner's Name (or Site Name,
+    for tables that don't have an Owner's Name column) + Area (ha) +
+    District + Sector + Cell all match. Used only for the Area (ha) totals;
+    every other metric still counts every row.
+    """
+    if "area_ha" not in df.columns:
+        return df
+    identity_col = "owner_name" if "owner_name" in df.columns else (
+        "site_name" if "site_name" in df.columns else None)
+    key_cols = [c for c in (identity_col, "area_ha", "district", "sector", "cell") if c and c in df.columns]
+    if not key_cols:
+        return df
+    out = df.copy()
+    out["area_ha"] = pd.to_numeric(out["area_ha"], errors="coerce")
+    return out.drop_duplicates(subset=key_cols, keep="first")
+
+
+def _dedup_roadside_length_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Count each district + road name + length combination once."""
+    if "length_km" not in df.columns:
+        return df
+    key_cols = [c for c in ("district", "road_name", "length_km") if c in df.columns]
+    if not key_cols:
+        return df
+    out = df.copy()
+    out["length_km"] = pd.to_numeric(out["length_km"], errors="coerce")
+    return out.drop_duplicates(subset=key_cols, keep="first")
+
 
 def render_dashboard(table_key: str):
     cfg = schemas.TABLES[table_key]
@@ -440,10 +494,21 @@ def render_dashboard(table_key: str):
         ("persons_in_hh", "Persons in HH"),
         ("actual_value", "Actual value"),
     ]
+    if table_key == "roadsides":
+        numeric_headline.insert(0, ("length_km", "Length (Km)"))
+    area_dedup_df = _dedup_area_df(fdf)
+    roadside_length_df = _dedup_roadside_length_df(fdf) if table_key == "roadsides" else fdf
     metrics = [("Records", f"{len(fdf):,}")]
     for col, label in numeric_headline:
-        if col in fdf.columns and pd.to_numeric(fdf[col], errors="coerce").notna().any():
-            metrics.append((label, f"{pd.to_numeric(fdf[col], errors='coerce').sum():,.0f}"))
+        if col not in fdf.columns or not pd.to_numeric(fdf[col], errors="coerce").notna().any():
+            continue
+        if col == "area_ha":
+            total = pd.to_numeric(area_dedup_df["area_ha"], errors="coerce").sum()
+        elif col == "length_km":
+            total = pd.to_numeric(roadside_length_df["length_km"], errors="coerce").sum()
+        else:
+            total = pd.to_numeric(fdf[col], errors="coerce").sum()
+        metrics.append((label, f"{total:,.0f}"))
     if "implementer" in fdf.columns:
         metrics.append(("Implementers", fdf["implementer"].nunique()))
     if "district" in fdf.columns:
@@ -467,10 +532,22 @@ def render_dashboard(table_key: str):
     with g1:
         if "implementer" in fdf.columns:
             if measure:
-                agg = (fdf.assign(_m=pd.to_numeric(fdf[measure], errors="coerce"))
+                source_df = (area_dedup_df if measure == "area_ha" else
+                             roadside_length_df if measure == "length_km" else fdf)
+                agg = (source_df.assign(_m=pd.to_numeric(source_df[measure], errors="coerce"))
                           .groupby("implementer", as_index=False)["_m"].sum()
                           .rename(columns={"_m": measure}).sort_values(measure, ascending=False))
                 fig = px.bar(agg, x="implementer", y=measure, title=f"{measure} by Implementer")
+                if measure == "area_ha":
+                    fig.update_layout(annotations=[dict(
+                        text="Deduplicated by owner/site + area + location",
+                        xref="paper", yref="paper", x=0, y=1.08, showarrow=False,
+                        font=dict(size=10, color="gray"))])
+                elif measure == "length_km":
+                    fig.update_layout(annotations=[dict(
+                        text="Deduplicated by district + road name + length",
+                        xref="paper", yref="paper", x=0, y=1.08, showarrow=False,
+                        font=dict(size=10, color="gray"))])
             else:
                 agg = fdf.groupby("implementer", as_index=False).size().rename(columns={"size": "records"})
                 fig = px.bar(agg, x="implementer", y="records", title="Records by Implementer")
@@ -486,11 +563,20 @@ def render_dashboard(table_key: str):
     g3, g4 = st.columns(2)
     with g3:
         if "intervention" in fdf.columns and fdf["intervention"].notna().any():
-            agg = (fdf.groupby("intervention", as_index=False).size()
-                      .rename(columns={"size": "records"})
-                      .sort_values("records", ascending=True).tail(12))
-            fig = px.bar(agg, x="records", y="intervention", orientation="h",
-                         title="Records by Intervention (top 12)")
+            if table_key == "roadsides":
+                agg = (roadside_length_df.assign(
+                           _length=pd.to_numeric(roadside_length_df["length_km"], errors="coerce"))
+                       .groupby("intervention", as_index=False)["_length"].sum()
+                       .rename(columns={"_length": "length_km"})
+                       .sort_values("length_km", ascending=True).tail(12))
+                fig = px.bar(agg, x="length_km", y="intervention", orientation="h",
+                             title="Total Length (Km) by Intervention")
+            else:
+                agg = (fdf.groupby("intervention", as_index=False).size()
+                          .rename(columns={"size": "records"})
+                          .sort_values("records", ascending=True).tail(12))
+                fig = px.bar(agg, x="records", y="intervention", orientation="h",
+                             title="Records by Intervention (top 12)")
             fig.update_layout(yaxis_title="", margin=dict(t=50, b=0))
             st.plotly_chart(fig, use_container_width=True)
     with g4:

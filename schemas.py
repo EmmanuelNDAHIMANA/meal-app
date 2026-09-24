@@ -50,7 +50,9 @@ TABLES = {
             f("Year", "year", "INT", "int", True),
             f("Site Name", "site_name", "VARCHAR(255)", "text", True),
             f("Area(Ha)", "area_ha", "DECIMAL(14,4)", "decimal"),
-            DISTRICT, SECTOR, CELL,
+            DISTRICT,
+            f("Sector", "sector", "VARCHAR(100)", "sector"),
+            f("Cell", "cell", "VARCHAR(100)", "cell"),
             f("Shapefile", "shapefile", "VARCHAR(500)", "file"),
             f("Tree Category", "tree_category", "VARCHAR(100)", "tree_origin"),
             TREE_TYPE, TREE_SPECIES,
@@ -238,11 +240,39 @@ TABLES = {
             DISTRICT, SECTOR, CELL,
         ],
     },
+    # ------------------------------------------------------------------
+    "roadsides": {
+        "table": "roadsides",
+        "title": "Roadsides",
+        "icon": "🛣️",
+        "fields": [
+            PROJECT, IMPLEMENTER,
+            f("Intervetion", "intervention", "VARCHAR(255)", "intervention", True),
+            DISTRICT,
+            f("Road Name", "road_name", "VARCHAR(255)", "text", True),
+            f("Road Type", "road_type", "VARCHAR(100)", "text"),
+            f("Length (Km)", "length_km", "DECIMAL(14,4)", "decimal"),
+            f("Year restored", "year_restored", "INT", "int"),
+            f("Shapefile", "shapefile", "VARCHAR(500)", "file"),
+            f("Tree Category", "tree_category", "VARCHAR(100)", "tree_origin"),
+            TREE_TYPE, TREE_SPECIES,
+            f("Number of Trees", "num_trees", "INT", "int"),
+            f("Location", "location", "VARCHAR(120)", "gps"),
+            f("Area requiring replanting (km)", "area_replanting_km", "DECIMAL(14,4)", "decimal"),
+            f("Replanting date", "replanting_date", "DATE", "date"),
+            f("Number of Trees Replanted", "num_trees_replanted", "INT", "int"),
+            f("CVC operational ?", "cvc_operational", "VARCHAR(10)", "choice", options=["Yes", "No"]),
+            f("Number of CVCs", "num_cvcs", "INT", "int"),
+            f("CVC Members Male", "cvc_members_male", "INT", "int"),
+            f("CVC Members Female", "cvc_members_female", "INT", "int"),
+            f("Attachments of CVC memebers", "cvc_members_attachments", "VARCHAR(500)", "file"),
+        ],
+    },
 }
 
 TABLE_ORDER = [
     "tree_plantation", "beneficiaries", "bso", "silvo", "af_demo",
-    "activities", "indicators", "trainings", "jobs_created",
+    "activities", "indicators", "trainings", "jobs_created", "roadsides",
 ]
 
 AUDIT_COLS = ["created_by", "created_at", "source"]

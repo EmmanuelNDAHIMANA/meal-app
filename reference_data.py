@@ -100,6 +100,11 @@ def _uniq(series) -> list[str]:
     return sorted({v for v in series if v})
 
 
+def _cf(s) -> str:
+    """Case-fold + strip, for case-insensitive comparisons."""
+    return str(s).strip().casefold()
+
+
 def districts() -> list[str]:
     return _uniq(load_locations()["District"])
 
@@ -108,14 +113,14 @@ def sectors(district: str) -> list[str]:
     if not district:
         return []
     df = load_locations()
-    return _uniq(df.loc[df["District"] == district, "Sector"])
+    return _uniq(df.loc[df["District"].str.casefold() == _cf(district), "Sector"])
 
 
 def cells(district: str, sector: str) -> list[str]:
     if not (district and sector):
         return []
     df = load_locations()
-    m = (df["District"] == district) & (df["Sector"] == sector)
+    m = (df["District"].str.casefold() == _cf(district)) & (df["Sector"].str.casefold() == _cf(sector))
     return _uniq(df.loc[m, "Cell"])
 
 
@@ -123,7 +128,9 @@ def villages(district: str, sector: str, cell: str) -> list[str]:
     if not (district and sector and cell):
         return []
     df = load_locations()
-    m = (df["District"] == district) & (df["Sector"] == sector) & (df["Cell"] == cell)
+    m = (df["District"].str.casefold() == _cf(district)) & \
+        (df["Sector"].str.casefold() == _cf(sector)) & \
+        (df["Cell"].str.casefold() == _cf(cell))
     return _uniq(df.loc[m, "Village"])
 
 
@@ -160,14 +167,29 @@ def tree_species(origin: str, ttype: str) -> list[str]:
 
 # --------------------------------------------------------- validation
 
-def validate_location(district, sector, cell, village="") -> bool:
+def canonical_location(district, sector, cell, village=""):
+    """
+    Case-insensitive lookup that returns the reference file's actual-cased
+    (District, Sector, Cell, Village) tuple for a match, or None if the
+    combination doesn't exist. Used to normalise casing on bulk upload so
+    'KIGALI' and 'Kigali' don't end up as two different dashboard entries.
+    Village in the returned tuple is "" when no village was given to match.
+    """
     df = load_locations()
-    m = (df["District"] == str(district).strip()) & \
-        (df["Sector"] == str(sector).strip()) & \
-        (df["Cell"] == str(cell).strip())
+    m = (df["District"].str.casefold() == _cf(district)) & \
+        (df["Sector"].str.casefold() == _cf(sector)) & \
+        (df["Cell"].str.casefold() == _cf(cell))
     if village:
-        m &= (df["Village"] == str(village).strip())
-    return bool(m.any())
+        m &= (df["Village"].str.casefold() == _cf(village))
+    sub = df.loc[m]
+    if sub.empty:
+        return None
+    row = sub.iloc[0]
+    return (row["District"], row["Sector"], row["Cell"], row["Village"] if village else "")
+
+
+def validate_location(district, sector, cell, village="") -> bool:
+    return canonical_location(district, sector, cell, village) is not None
 
 
 def validate_intervention(implementer, intervention) -> bool:
