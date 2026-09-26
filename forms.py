@@ -19,6 +19,7 @@ import templates
 import reference_data as ref
 import filestore
 import mapwidget
+import ui
 
 CASCADE_FIRST = {"implementer", "district", "tree_origin"}
 
@@ -450,6 +451,7 @@ def _dedup_roadside_length_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_dashboard(table_key: str):
+    ui.apply_iucn_styles()
     cfg = schemas.TABLES[table_key]
     try:
         df = db.run_query(f"SELECT * FROM `{cfg['table']}`")
@@ -537,7 +539,8 @@ def render_dashboard(table_key: str):
                 agg = (source_df.assign(_m=pd.to_numeric(source_df[measure], errors="coerce"))
                           .groupby("implementer", as_index=False)["_m"].sum()
                           .rename(columns={"_m": measure}).sort_values(measure, ascending=False))
-                fig = px.bar(agg, x="implementer", y=measure, title=f"{measure} by Implementer")
+                fig = px.bar(agg, x="implementer", y=measure, title=f"{measure} by Implementer",
+                             text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
                 if measure == "area_ha":
                     fig.update_layout(annotations=[dict(
                         text="Deduplicated by owner/site + area + location",
@@ -550,14 +553,20 @@ def render_dashboard(table_key: str):
                         font=dict(size=10, color="gray"))])
             else:
                 agg = fdf.groupby("implementer", as_index=False).size().rename(columns={"size": "records"})
-                fig = px.bar(agg, x="implementer", y="records", title="Records by Implementer")
+                fig = px.bar(agg, x="implementer", y="records", title="Records by Implementer",
+                             text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
+            fig.update_traces(textposition="outside", cliponaxis=False)
             fig.update_layout(xaxis_title="", margin=dict(t=50, b=0))
+            ui.style_iucn_chart(fig)
             st.plotly_chart(fig, use_container_width=True)
     with g2:
         if "project" in fdf.columns:
             agg = fdf.groupby("project", as_index=False).size().rename(columns={"size": "records"})
-            fig = px.pie(agg, names="project", values="records", hole=0.45, title="Records by Project")
+            fig = px.pie(agg, names="project", values="records", hole=0.45, title="Records by Project",
+                         color_discrete_sequence=ui.IUCN_PALETTE)
+            fig.update_traces(textinfo="label+value", textposition="inside")
             fig.update_layout(margin=dict(t=50, b=0))
+            ui.style_iucn_chart(fig)
             st.plotly_chart(fig, use_container_width=True)
 
     g3, g4 = st.columns(2)
@@ -570,27 +579,37 @@ def render_dashboard(table_key: str):
                        .rename(columns={"_length": "length_km"})
                        .sort_values("length_km", ascending=True).tail(12))
                 fig = px.bar(agg, x="length_km", y="intervention", orientation="h",
-                             title="Total Length (Km) by Intervention")
+                             title="Total Length (Km) by Intervention", text_auto=".2s",
+                             color_discrete_sequence=ui.IUCN_PALETTE)
             else:
                 agg = (fdf.groupby("intervention", as_index=False).size()
                           .rename(columns={"size": "records"})
                           .sort_values("records", ascending=True).tail(12))
                 fig = px.bar(agg, x="records", y="intervention", orientation="h",
-                             title="Records by Intervention (top 12)")
+                             title="Records by Intervention (top 12)", text_auto=".2s",
+                             color_discrete_sequence=ui.IUCN_PALETTE)
+            fig.update_traces(textposition="outside", cliponaxis=False)
             fig.update_layout(yaxis_title="", margin=dict(t=50, b=0))
+            ui.style_iucn_chart(fig)
             st.plotly_chart(fig, use_container_width=True)
     with g4:
         if "district" in fdf.columns and fdf["district"].notna().any():
             agg = (fdf.groupby("district", as_index=False).size()
                       .rename(columns={"size": "records"})
                       .sort_values("records", ascending=False).head(12))
-            fig = px.bar(agg, x="district", y="records", title="Records by District (top 12)")
+            fig = px.bar(agg, x="district", y="records", title="Records by District (top 12)",
+                         text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
+            fig.update_traces(textposition="outside", cliponaxis=False)
             fig.update_layout(xaxis_title="", margin=dict(t=50, b=0))
+            ui.style_iucn_chart(fig)
             st.plotly_chart(fig, use_container_width=True)
 
     if "gender" in fdf.columns and fdf["gender"].notna().any():
         agg = fdf.groupby("gender", as_index=False).size().rename(columns={"size": "records"})
-        fig = px.bar(agg, x="gender", y="records", title="Records by Gender", height=300)
+        fig = px.bar(agg, x="gender", y="records", title="Records by Gender", height=300,
+                     text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
+        fig.update_traces(textposition="outside", cliponaxis=False)
+        ui.style_iucn_chart(fig)
         st.plotly_chart(fig, use_container_width=True)
 
     st.divider()

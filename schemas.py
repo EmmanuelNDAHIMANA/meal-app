@@ -240,6 +240,29 @@ TABLES = {
             DISTRICT, SECTOR, CELL,
         ],
     },
+    # ------------------------------------------------------------
+    "coperatives": {
+        "table": "coperatives",
+        "title": "Coperatives",
+        "icon": "🤝",
+        "fields": [
+            PROJECT, IMPLEMENTER, INTERVENTION,
+            f("Activity code", "activity_code", "VARCHAR(50)", "text"),
+            f("Cooperative membership", "cooperative_membership", "VARCHAR(100)", "choice",
+              options=["Yes", "No"]),
+            f("Cooperative/Group", "cooperative_group", "VARCHAR(200)", "text"),
+            f("Name of chairperson of the Group/Coop", "chairperson_name", "VARCHAR(200)", "text"),
+            f("Phone Number", "phone_number", "VARCHAR(30)", "phone"),
+            f("Types of jobs created", "job_type", "VARCHAR(200)", "text"),
+            f("Jobs created month", "jobs_created_month", "VARCHAR(30)", "text"),
+            f("Job creation", "job_creation", "INT", "int"),
+            f("Total number of Female", "total_female", "INT", "int"),
+            f("Total number of Male", "total_male", "INT", "int"),
+            f("Total workers", "total_workers", "INT", "int"),
+            DISTRICT, SECTOR, CELL,
+            f("Attach list of coop/Group Members", "members_list", "VARCHAR(500)", "file"),
+        ],
+    },
     # ------------------------------------------------------------------
     "roadsides": {
         "table": "roadsides",
@@ -272,7 +295,7 @@ TABLES = {
 
 TABLE_ORDER = [
     "tree_plantation", "beneficiaries", "bso", "silvo", "af_demo",
-    "activities", "indicators", "trainings", "jobs_created", "roadsides",
+    "activities", "indicators", "trainings", "jobs_created", "coperatives", "roadsides",
 ]
 
 AUDIT_COLS = ["created_by", "created_at", "source"]
