@@ -11,6 +11,8 @@ Dropdowns are driven by your validated reference data, bundled in `reference/`:
 |---|---|---|
 | `reference/Location.xlsx` | District → Sector → Cell → Village | 14,842 rows · 30 districts · 387 sectors · 1,467 cells · 6,621 villages |
 | `reference/Interventions.xlsx` | Implementer → Intervention | 65 rows · 6 implementers |
+| `reference/Activities.xlsx` | Activities page: Implementer → Main Activity → Sub Activity → Deliverables → Start/End Date → Expected Results | 306 populated rows |
+| `reference/Indicators.xlsx` | Indicators page: Project → Implementer → Activity reference → Indicator → Sub Indicator → Unit → Targets → Reporting Date → Indicator Type | Tracking data reference |
 | `reference/Trees.xlsx` | Tree Orgine → Tree Type → Tree species | **optional, not supplied** |
 
 ---

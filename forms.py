@@ -90,7 +90,25 @@ def render_form(table_key: str):
         i += 1
 
         with c:
-            if ft == "project":
+            if ft.startswith("indicator_"):
+                options = ref.indicator_options(fl["col"], vals)
+                indicator_widget_args = {}
+                if fl["col"] == "reporting_date":
+                    indicator_widget_args["format_func"] = lambda value: value[:4] if value else ""
+                vals[fl["col"]] = st.selectbox(
+                    label, [""] + options, key=key,
+                    help="Choose the preceding indicator fields first."
+                    if fl["col"] != "project" and not options else None,
+                    **indicator_widget_args,
+                )
+            elif ft.startswith("activity_"):
+                options = ref.activity_options(fl["col"], vals)
+                vals[fl["col"]] = st.selectbox(
+                    label, [""] + options, key=key,
+                    help="Choose the preceding activity fields first."
+                    if ft != "activity_implementer" and not options else None,
+                )
+            elif ft == "project":
                 vals[fl["col"]] = st.selectbox(label, [""] + config.PROJECTS, key=key)
             elif ft == "implementer":
                 vals[fl["col"]] = st.selectbox(label, [""] + ref.implementers(), key=key)
@@ -224,6 +242,12 @@ def _normalize_location_casing(rec: dict):
             rec["village"] = canon[3]
 
 
+def _normalize_activity_values(rec: dict):
+    canonical = ref.canonical_activity(rec)
+    if canonical:
+        rec.update(canonical)
+
+
 def _validate(cfg, rec: dict, strict_ref: bool = True) -> list[str]:
     errs: list[str] = []
     by_type = {fl["ftype"]: fl["col"] for fl in cfg["fields"]}
@@ -233,15 +257,20 @@ def _validate(cfg, rec: dict, strict_ref: bool = True) -> list[str]:
             errs.append(f"'{fl['label']}' is required")
 
     proj = rec.get("project")
-    if not _blank(proj) and str(proj).strip() not in config.PROJECTS:
+    if cfg["table"] != "indicators" and not _blank(proj) and str(proj).strip() not in config.PROJECTS:
         errs.append(f"Project '{proj}' is not one of {', '.join(config.PROJECTS)}")
 
     impl = rec.get("implementer")
     interv = rec.get("intervention")
-    if not _blank(impl) and not ref.validate_implementer(impl):
+    if cfg["table"] not in ("activities", "indicators") and not _blank(impl) and not ref.validate_implementer(impl):
         errs.append(f"Implementer '{impl}' is not in the reference list")
-    elif not _blank(impl) and not _blank(interv) and not ref.validate_intervention(impl, interv):
+    elif cfg["table"] not in ("activities", "indicators") and not _blank(impl) and not _blank(interv) and not ref.validate_intervention(impl, interv):
         errs.append(f"Intervention '{interv}' does not belong to Implementer '{impl}'")
+
+    if cfg["table"] == "activities" and ref.canonical_activity(rec) is None:
+        errs.append("The activity selections do not match the reporting reference list")
+    if cfg["table"] == "indicators" and ref.canonical_indicator(rec) is None:
+        errs.append("The indicator selections do not match the tracking reference list")
 
     d, s, c = rec.get("district"), rec.get("sector"), rec.get("cell")
     v = rec.get("village")
@@ -287,6 +316,16 @@ def _coerce(val, ftype):
     if ftype == "decimal":
         return float(str(val).replace(",", "").strip())
     if ftype == "date":
+        ts = pd.to_datetime(val, errors="raise", dayfirst=False)
+        return ts.date().isoformat()
+    if ftype in ("activity_start_date", "activity_end_date"):
+        ts = pd.to_datetime(val, errors="raise", dayfirst=False)
+        return ts.date().isoformat()
+    if ftype in ("indicator_mid_term_target", "indicator_lop_target", "indicator_target_year"):
+        return float(str(val).replace(",", "").strip())
+    if ftype == "indicator_reporting_date":
+        if isinstance(val, (int, float)) and 1900 <= float(val) <= 2100:
+            return f"{int(val):04d}-01-01"
         ts = pd.to_datetime(val, errors="raise", dayfirst=False)
         return ts.date().isoformat()
     return str(val).strip()
@@ -377,6 +416,12 @@ def render_upload(table_key: str):
                         **{k: v for k, v in rec.items()}})
         else:
             _normalize_location_casing(rec)
+            if cfg["table"] == "activities":
+                _normalize_activity_values(rec)
+            if cfg["table"] == "indicators":
+                canonical = ref.canonical_indicator(rec)
+                if canonical:
+                    rec.update(canonical)
             good.append(rec)
 
     m1, m2, m3 = st.columns(3)
@@ -452,7 +497,13 @@ def _dedup_roadside_length_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def render_dashboard(table_key: str):
     ui.apply_iucn_styles()
+    if table_key == "beneficiaries":
+        # Keep long household counts compact enough to fit their summary card.
+        st.markdown("""<style>
+        [data-testid="stMetricValue"] { font-size: 1.45rem; }
+        </style>""", unsafe_allow_html=True)
     cfg = schemas.TABLES[table_key]
+    count_label = "Beneficiaries" if table_key == "beneficiaries" else "Records"
     try:
         df = db.run_query(f"SELECT * FROM `{cfg['table']}`")
     except Exception as e:
@@ -460,10 +511,11 @@ def render_dashboard(table_key: str):
         return
 
     if df.empty:
-        st.info("No records in this table yet.")
+        st.info(f"No {count_label.lower()} in this table yet.")
         return
 
-    f1, f2, f3 = st.columns(3)
+    filter_columns = st.columns(4 if table_key == "beneficiaries" else 3)
+    f1, f2, f3 = filter_columns[:3]
     with f1:
         proj = st.multiselect("Project", sorted(df["project"].dropna().unique())
                               if "project" in df else [], key=f"d_p_{table_key}")
@@ -478,14 +530,34 @@ def render_dashboard(table_key: str):
         else:
             interv = []
             st.caption("This table has no Intervention column.")
+    beneficiary_category = []
+    if table_key == "beneficiaries":
+        with filter_columns[3]:
+            beneficiary_category = st.multiselect(
+                "Beneficiary Category",
+                sorted(df["beneficiary_category"].dropna().unique())
+                if "beneficiary_category" in df.columns else [],
+                key=f"d_bc_{table_key}",
+            )
 
     fdf = df.copy()
+    if table_key == "beneficiaries" and "district" in fdf.columns:
+        # Normalize casing before counts and grouping so case variants become one district.
+        fdf["district"] = fdf["district"].astype("string").str.strip().str.title()
     if proj:
         fdf = fdf[fdf["project"].isin(proj)]
     if impl:
         fdf = fdf[fdf["implementer"].isin(impl)]
     if interv:
         fdf = fdf[fdf["intervention"].isin(interv)]
+    if beneficiary_category:
+        fdf = fdf[fdf["beneficiary_category"].isin(beneficiary_category)]
+    district_counts = None
+    if table_key == "beneficiaries" and "district" in fdf.columns:
+        district_counts = (fdf.dropna(subset=["district"])
+                           .groupby("district").size()
+                           .rename("records").reset_index())
+        district_counts = district_counts[district_counts["records"] > 100]
 
     # headline metrics
     numeric_headline = [
@@ -500,40 +572,59 @@ def render_dashboard(table_key: str):
         numeric_headline.insert(0, ("length_km", "Length (Km)"))
     area_dedup_df = _dedup_area_df(fdf)
     roadside_length_df = _dedup_roadside_length_df(fdf) if table_key == "roadsides" else fdf
-    metrics = [("Records", f"{len(fdf):,}")]
-    for col, label in numeric_headline:
-        if col not in fdf.columns or not pd.to_numeric(fdf[col], errors="coerce").notna().any():
-            continue
-        if col == "area_ha":
-            total = pd.to_numeric(area_dedup_df["area_ha"], errors="coerce").sum()
-        elif col == "length_km":
-            total = pd.to_numeric(roadside_length_df["length_km"], errors="coerce").sum()
-        else:
-            total = pd.to_numeric(fdf[col], errors="coerce").sum()
-        metrics.append((label, f"{total:,.0f}"))
-    if "implementer" in fdf.columns:
-        metrics.append(("Implementers", fdf["implementer"].nunique()))
-    if "district" in fdf.columns:
-        metrics.append(("Districts", fdf["district"].nunique()))
+    if table_key == "coperatives":
+        metrics = [("Cooperative/Group", fdf["cooperative_group"].nunique(dropna=True)
+                    if "cooperative_group" in fdf.columns else 0)]
+        for col, label in (("total_workers", "Total workers"),
+                           ("total_female", "Total number of Female"),
+                           ("total_male", "Total number of Male")):
+            total = pd.to_numeric(fdf[col], errors="coerce").sum() if col in fdf.columns else 0
+            metrics.append((label, f"{total:,.0f}"))
+    else:
+        metrics = [(count_label, f"{len(fdf):,}")]
+        for col, label in numeric_headline:
+            if col not in fdf.columns or not pd.to_numeric(fdf[col], errors="coerce").notna().any():
+                continue
+            if col == "area_ha":
+                total = pd.to_numeric(area_dedup_df["area_ha"], errors="coerce").sum()
+            elif col == "length_km":
+                total = pd.to_numeric(roadside_length_df["length_km"], errors="coerce").sum()
+            else:
+                total = pd.to_numeric(fdf[col], errors="coerce").sum()
+            metrics.append((label, f"{total:,.0f}"))
+        if "implementer" in fdf.columns:
+            metrics.append(("Implementers", fdf["implementer"].nunique()))
+        if "district" in fdf.columns:
+            district_total = (len(district_counts) if district_counts is not None
+                              else fdf["district"].nunique())
+            metrics.append(("Districts", district_total))
 
     mcols = st.columns(min(len(metrics), 5))
     for (label, value), mc in zip(metrics[:5], mcols):
         mc.metric(label, value)
 
     if fdf.empty:
-        st.warning("No records match the current filters.")
+        st.warning(f"No {count_label.lower()} match the current filters.")
         return
 
     st.divider()
 
     # pick a sensible measure for the charts
-    measure = next((c for c, _ in numeric_headline
+    measure = ("total_workers" if table_key == "coperatives" and "total_workers" in fdf.columns else
+               next((c for c, _ in numeric_headline
                     if c in fdf.columns and pd.to_numeric(fdf[c], errors="coerce").notna().any()), None)
+               )
 
     g1, g2 = st.columns(2)
     with g1:
         if "implementer" in fdf.columns:
-            if measure:
+            if table_key == "coperatives":
+                agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
+                       .groupby("implementer", as_index=False)["_workers"].sum()
+                       .rename(columns={"_workers": "total_workers"}))
+                fig = px.bar(agg, x="implementer", y="total_workers", title="Total workers by Implementer",
+                             text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
+            elif measure:
                 source_df = (area_dedup_df if measure == "area_ha" else
                              roadside_length_df if measure == "length_km" else fdf)
                 agg = (source_df.assign(_m=pd.to_numeric(source_df[measure], errors="coerce"))
@@ -553,7 +644,7 @@ def render_dashboard(table_key: str):
                         font=dict(size=10, color="gray"))])
             else:
                 agg = fdf.groupby("implementer", as_index=False).size().rename(columns={"size": "records"})
-                fig = px.bar(agg, x="implementer", y="records", title="Records by Implementer",
+                fig = px.bar(agg, x="implementer", y="records", title=f"{count_label} by Implementer",
                              text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
             fig.update_traces(textposition="outside", cliponaxis=False)
             fig.update_layout(xaxis_title="", margin=dict(t=50, b=0))
@@ -561,9 +652,16 @@ def render_dashboard(table_key: str):
             st.plotly_chart(fig, use_container_width=True)
     with g2:
         if "project" in fdf.columns:
-            agg = fdf.groupby("project", as_index=False).size().rename(columns={"size": "records"})
-            fig = px.pie(agg, names="project", values="records", hole=0.45, title="Records by Project",
-                         color_discrete_sequence=ui.IUCN_PALETTE)
+            if table_key == "coperatives":
+                agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
+                       .groupby("project", as_index=False)["_workers"].sum()
+                       .rename(columns={"_workers": "total_workers"}))
+                fig = px.pie(agg, names="project", values="total_workers", hole=0.45,
+                             title="Total workers by Project", color_discrete_sequence=ui.IUCN_PALETTE)
+            else:
+                agg = fdf.groupby("project", as_index=False).size().rename(columns={"size": "records"})
+                fig = px.pie(agg, names="project", values="records", hole=0.45, title=f"{count_label} by Project",
+                             color_discrete_sequence=ui.IUCN_PALETTE)
             fig.update_traces(textinfo="label+value", textposition="inside")
             fig.update_layout(margin=dict(t=50, b=0))
             ui.style_iucn_chart(fig)
@@ -581,12 +679,20 @@ def render_dashboard(table_key: str):
                 fig = px.bar(agg, x="length_km", y="intervention", orientation="h",
                              title="Total Length (Km) by Intervention", text_auto=".2s",
                              color_discrete_sequence=ui.IUCN_PALETTE)
+            elif table_key == "coperatives":
+                agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
+                       .groupby("intervention", as_index=False)["_workers"].sum()
+                       .rename(columns={"_workers": "total_workers"})
+                       .sort_values("total_workers", ascending=True).tail(12))
+                fig = px.bar(agg, x="total_workers", y="intervention", orientation="h",
+                             title="Total workers by Intervention (top 12)", text_auto=".2s",
+                             color_discrete_sequence=ui.IUCN_PALETTE)
             else:
                 agg = (fdf.groupby("intervention", as_index=False).size()
                           .rename(columns={"size": "records"})
                           .sort_values("records", ascending=True).tail(12))
                 fig = px.bar(agg, x="records", y="intervention", orientation="h",
-                             title="Records by Intervention (top 12)", text_auto=".2s",
+                             title=f"{count_label} by Intervention (top 12)", text_auto=".2s",
                              color_discrete_sequence=ui.IUCN_PALETTE)
             fig.update_traces(textposition="outside", cliponaxis=False)
             fig.update_layout(yaxis_title="", margin=dict(t=50, b=0))
@@ -594,20 +700,40 @@ def render_dashboard(table_key: str):
             st.plotly_chart(fig, use_container_width=True)
     with g4:
         if "district" in fdf.columns and fdf["district"].notna().any():
-            agg = (fdf.groupby("district", as_index=False).size()
-                      .rename(columns={"size": "records"})
-                      .sort_values("records", ascending=False).head(12))
-            fig = px.bar(agg, x="district", y="records", title="Records by District (top 12)",
-                         text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
-            fig.update_traces(textposition="outside", cliponaxis=False)
-            fig.update_layout(xaxis_title="", margin=dict(t=50, b=0))
-            ui.style_iucn_chart(fig)
-            st.plotly_chart(fig, use_container_width=True)
+            if table_key == "coperatives":
+                agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
+                       .groupby("district", as_index=False)["_workers"].sum()
+                       .rename(columns={"_workers": "total_workers"})
+                       .sort_values("total_workers", ascending=False).head(12))
+                fig = px.bar(agg, x="district", y="total_workers", title="Total workers by District (top 12)",
+                             text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
+            else:
+                agg = district_counts if district_counts is not None else (
+                fdf.groupby("district", as_index=False).size()
+                   .rename(columns={"size": "records"})
+                )
+                agg = agg.sort_values("records", ascending=False).head(12)
+            if table_key == "coperatives" or not agg.empty:
+                if table_key != "coperatives":
+                    fig = px.bar(agg, x="district", y="records", title=f"{count_label} by District (over 100)",
+                                 text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
+
+                fig.update_traces(textposition="outside", cliponaxis=False)
+                fig.update_layout(xaxis_title="", margin=dict(t=50, b=0))
+                ui.style_iucn_chart(fig)
+                st.plotly_chart(fig, use_container_width=True)
 
     if "gender" in fdf.columns and fdf["gender"].notna().any():
-        agg = fdf.groupby("gender", as_index=False).size().rename(columns={"size": "records"})
-        fig = px.bar(agg, x="gender", y="records", title="Records by Gender", height=300,
-                     text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
+        if table_key == "coperatives":
+            agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
+                   .groupby("gender", as_index=False)["_workers"].sum()
+                   .rename(columns={"_workers": "total_workers"}))
+            fig = px.bar(agg, x="gender", y="total_workers", title="Total workers by Gender", height=300,
+                         text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
+        else:
+            agg = fdf.groupby("gender", as_index=False).size().rename(columns={"size": "records"})
+            fig = px.bar(agg, x="gender", y="records", title=f"{count_label} by Gender", height=300,
+                         text_auto=".2s", color_discrete_sequence=ui.IUCN_PALETTE)
         fig.update_traces(textposition="outside", cliponaxis=False)
         ui.style_iucn_chart(fig)
         st.plotly_chart(fig, use_container_width=True)
@@ -616,7 +742,7 @@ def render_dashboard(table_key: str):
     st.markdown(f"#### Records ({len(fdf):,})")
     st.dataframe(fdf, use_container_width=True, height=380)
     st.download_button(
-        "⬇️ Download filtered records (CSV)",
+        f"⬇️ Download filtered {count_label.lower()} (CSV)",
         fdf.to_csv(index=False).encode(),
         file_name=f"{cfg['table']}_filtered.csv",
         key=f"dl_{table_key}",

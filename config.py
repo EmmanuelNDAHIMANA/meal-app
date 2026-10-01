@@ -45,6 +45,8 @@ INTERVENTION_FILE = REFERENCE_DIR / "Interventions.xlsx"  # Implementer/Interven
 # "Tree Origin", "Tree Type", "Tree species", those three fields become
 # cascading dropdowns too. Without it they stay free-text.
 TREE_FILE = REFERENCE_DIR / "Trees.xlsx"
+ACTIVITY_FILE = REFERENCE_DIR / "Activities.xlsx"
+INDICATOR_FILE = REFERENCE_DIR / "Indicators.xlsx"
 
 PROJECTS = ["TREPA", "COMBIO", "AREECA", "DESIRA"]
 
