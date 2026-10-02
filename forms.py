@@ -7,12 +7,14 @@ Schema-driven UI engine reused by all nine data pages:
 from __future__ import annotations
 import datetime as dt
 import hashlib
+import html
 import json
 import re
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as components
 
 import config
 import db
@@ -515,6 +517,160 @@ def _dedup_roadside_length_df(df: pd.DataFrame) -> pd.DataFrame:
     return out.drop_duplicates(subset=key_cols, keep="first")
 
 
+def _indicator_main_activity_options(df: pd.DataFrame) -> dict[str, set[str]]:
+    """Map indicator activity-reference codes to their Main Activity labels."""
+    activities = ref.load_activities()
+    options: dict[str, set[str]] = {}
+    if df.empty or "activity_reference" not in df.columns:
+        return options
+
+    refs = df[[column for column in ("implementer", "activity_reference") if column in df.columns]]
+    refs = refs.dropna().drop_duplicates()
+    for _, row in refs.iterrows():
+        activity_ref = str(row.get("activity_reference", "")).strip()
+        if not activity_ref:
+            continue
+        implementer = str(row.get("implementer", "")).strip()
+        candidates = activities
+        if implementer and "implementer" in candidates:
+            candidates = candidates[candidates["implementer"].astype(str).str.casefold() == implementer.casefold()]
+        matches = candidates[
+            candidates["main_activity"].astype(str).str.match(
+                rf"^\s*{re.escape(activity_ref)}(?!\d)", case=False, na=False
+            )
+        ] if not candidates.empty else candidates
+        labels = matches["main_activity"].astype(str).str.strip().unique().tolist() if not matches.empty else []
+        for label in labels or [activity_ref]:
+            options.setdefault(label, set()).add(activity_ref)
+    return dict(sorted(options.items(), key=lambda item: item[0].casefold()))
+
+
+def _render_indicator_summary_table(
+    selected_df: pd.DataFrame, period_source_df: pd.DataFrame, date_filtered: bool = False
+):
+    """Render the Power BI indicator summary as a searchable HTML table."""
+    if selected_df.empty:
+        st.info("No indicator records match the current filters.")
+        return
+
+    def numeric(series):
+        return pd.to_numeric(series, errors="coerce")
+
+    def mean_or_zero(series):
+        values = numeric(series).dropna()
+        return float(values.mean()) if not values.empty else 0.0
+
+    def sum_or_zero(series):
+        return float(numeric(series).sum()) if series is not None else 0.0
+
+    special_terms = (
+        "density", "cvc", "districts with integrated climate resilient ",
+        "staff from national government and district authorities",
+    )
+    all_rows = period_source_df.copy()
+    chosen_rows = selected_df.copy()
+    for frame in (all_rows, chosen_rows):
+        frame["_report_date"] = pd.to_datetime(frame["reporting_date"], errors="coerce").dt.normalize()
+        frame["_actual_num"] = numeric(frame["actual_value"])
+        frame["_target_num"] = numeric(frame["lop_target"])
+        frame["_year_target_num"] = numeric(frame["target_year"])
+
+    rows_html = []
+    indicators = sorted(chosen_rows["indicator"].dropna().astype(str).unique(), key=str.casefold)
+    for indicator in indicators:
+        data = all_rows[all_rows["indicator"].astype(str) == indicator]
+        selected = chosen_rows[chosen_rows["indicator"].astype(str) == indicator]
+        if data.empty:
+            continue
+        special = any(term in indicator.casefold() for term in special_terms)
+        implementers = sorted(data["implementer"].dropna().astype(str).unique(), key=str.casefold)
+
+        # LoP values ignore the Reporting Date selection, matching the DAX measure.
+        total_target = sum(mean_or_zero(data.loc[data["implementer"] == impl, "_target_num"])
+                           for impl in implementers)
+        total_actual = (mean_or_zero(data["_actual_num"]) if special
+                        else sum_or_zero(data["_actual_num"]))
+
+        # Without a date selection, show the latest reporting date with a target/actual.
+        max_target_date = data.loc[data["_year_target_num"] > 0, "_report_date"].max()
+        if date_filtered:
+            yearly_target_rows = selected
+        elif pd.isna(max_target_date):
+            yearly_target_rows = data.iloc[0:0]
+        else:
+            yearly_target_rows = data[data["_report_date"] == max_target_date]
+        target_year = sum(mean_or_zero(yearly_target_rows.loc[
+            yearly_target_rows["implementer"] == impl, "_year_target_num"
+        ]) for impl in implementers)
+
+        if date_filtered:
+            yearly_actual_rows = selected
+        else:
+            max_actual_date = data.loc[data["_actual_num"] > 0, "_report_date"].max()
+            yearly_actual_rows = (data[data["_report_date"] == max_actual_date]
+                                  if not pd.isna(max_actual_date) else data.iloc[0:0])
+        yearly_actual = (mean_or_zero(yearly_actual_rows["_actual_num"]) if special
+                         else sum_or_zero(yearly_actual_rows["_actual_num"]))
+
+        lop_progress = total_actual / total_target if total_target else 0.0
+        yearly_progress = yearly_actual / target_year if target_year else 0.0
+        pct_text = f"{lop_progress:.0%}"
+        yearly_pct_text = f"{yearly_progress:.0%}"
+        lop_width = min(max(lop_progress, 0.0), 1.0) * 100
+        yearly_degrees = min(max(yearly_progress, 0.0), 1.0) * 360
+        color = "#27ae60" if lop_progress > 0.6 else "#f1c40f" if lop_progress > 0.3 else "#e74c3c"
+        yearly_color = "#27ae60" if yearly_progress > 0.6 else "#f1c40f" if yearly_progress > 0.3 else "#e74c3c"
+        chips = []
+        chip_colors = {
+            "ICRAF": ("#d6e4ff", "#1f4e79"), "RFA": ("#e8f8f5", "#117a65"),
+            "CORDAID": ("#fdebd0", "#9c640c"), "IUCN": ("#eafaf1", "#1e8449"),
+            "Enabel/IUCN": ("#f5eef8", "#6c3483"),
+        }
+        for implementer in implementers:
+            bg, fg = chip_colors.get(implementer, ("#eef1f5", "#444"))
+            chips.append(
+                f'<span class="chip" style="background:{bg};color:{fg}">{html.escape(implementer)}</span>'
+            )
+        unit_values = data["unit"].dropna().astype(str)
+        unit = html.escape(max(unit_values) if not unit_values.empty else "")
+        rows_html.append(
+            "<tr class='data-row'>"
+            f'<td class="indicator">● {html.escape(indicator)}</td>'
+            f"<td>{unit}</td><td>{''.join(chips)}</td>"
+            f"<td>{total_target:,.0f}</td><td class='actual'>{total_actual:,.0f}</td>"
+            f'<td><div class="progress"><div class="bar" style="width:{lop_width:.1f}%;background:{color}"></div></div>'
+            f'<span style="color:{color};font-weight:600">{pct_text}</span></td>'
+            f'<td><div class="pie" style="background:conic-gradient({yearly_color} 0deg {yearly_degrees:.1f}deg,#eee {yearly_degrees:.1f}deg 360deg)"></div>'
+            f'<span style="color:{yearly_color};font-weight:600">{yearly_pct_text}</span></td></tr>'
+        )
+
+    table_html = """
+    <style>
+      body{font-family:Segoe UI,Arial,sans-serif;margin:0;color:#263442}
+      #searchBox{width:250px;padding:7px 9px;margin:0 0 10px;border:1px solid #cbd5df;border-radius:6px;font-size:13px}
+      .table-wrap{overflow:auto;max-height:650px;border:1px solid #e0e0e0;border-radius:7px}
+      table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;font-size:13px}
+      th,td{border-bottom:1px solid #e6e9ed;padding:10px;text-align:left;vertical-align:middle}
+      th{position:sticky;top:0;z-index:2;background:#f8fafc;color:#6b7785;font-size:11px;letter-spacing:.03em;white-space:nowrap}
+      tr:hover td{background:#f9fbff}.indicator{font-weight:600;min-width:260px}
+      .chip{display:inline-block;padding:4px 8px;border-radius:10px;font-size:11px;margin:2px;white-space:nowrap}
+      .actual{font-weight:600;color:#2b579a}.progress{display:inline-block;width:120px;background:#eee;border-radius:10px;height:8px;margin-right:8px;overflow:hidden;vertical-align:middle}
+      .bar{height:100%}.pie{display:inline-block;width:30px;height:30px;border-radius:50%;margin-right:8px;vertical-align:middle;position:relative}
+      .pie:after{content:"";position:absolute;inset:5px;border-radius:50%;background:#fff}
+    </style>
+    <input id="searchBox" type="text" placeholder="Search indicator..." oninput="filterTable()">
+    <div class="table-wrap"><table><thead><tr>
+      <th>INDICATOR</th><th>UNIT</th><th>IMPLEMENTER</th><th>LoP TARGET</th><th>ACTUAL</th><th>LoP PROGRESS</th><th>YEARLY PROGRESS</th>
+    </tr></thead><tbody id="indicatorRows">__ROWS__</tbody></table></div>
+    <script>
+      function filterTable(){const q=document.getElementById('searchBox').value.toLowerCase();
+        document.querySelectorAll('.data-row').forEach(r=>r.style.display=r.innerText.toLowerCase().includes(q)?'':'none');}
+    </script>
+    """.replace("__ROWS__", "".join(rows_html))
+    height = min(740, max(220, 100 + len(rows_html) * 48))
+    components.html(table_html, height=height, scrolling=True)
+
+
 def render_dashboard(table_key: str):
     ui.apply_iucn_styles()
     if table_key == "beneficiaries":
@@ -534,7 +690,7 @@ def render_dashboard(table_key: str):
         st.info(f"No {count_label.lower()} in this table yet.")
         return
 
-    filter_columns = st.columns(4 if table_key == "beneficiaries" else 3)
+    filter_columns = st.columns(4 if table_key in ("beneficiaries", "indicators") else 3)
     f1, f2, f3 = filter_columns[:3]
     with f1:
         proj = st.multiselect("Project", sorted(df["project"].dropna().unique())
@@ -542,15 +698,31 @@ def render_dashboard(table_key: str):
     with f2:
         impl = st.multiselect("Implementer", sorted(df["implementer"].dropna().unique())
                               if "implementer" in df else [], key=f"d_i_{table_key}")
-    with f3:
-        if "intervention" in df.columns:
-            pool = df[df["implementer"].isin(impl)] if impl else df
-            interv = st.multiselect("Intervention", sorted(pool["intervention"].dropna().unique()),
-                                    key=f"d_v_{table_key}")
-        else:
-            interv = []
-            st.caption("This table has no Intervention column.")
+    main_activity_map = {}
+    interv = []
+    if table_key == "indicators":
+        activity_source = df.copy()
+        if proj:
+            activity_source = activity_source[activity_source["project"].isin(proj)]
+        if impl:
+            activity_source = activity_source[activity_source["implementer"].isin(impl)]
+        main_activity_map = _indicator_main_activity_options(activity_source)
+        with f3:
+            main_activity = st.multiselect(
+                "Main Activity", list(main_activity_map), key=f"d_main_activity_{table_key}"
+            )
+    else:
+        main_activity = []
+        with f3:
+            if "intervention" in df.columns:
+                pool = df[df["implementer"].isin(impl)] if impl else df
+                interv = st.multiselect("Intervention", sorted(pool["intervention"].dropna().unique()),
+                                        key=f"d_v_{table_key}")
+            else:
+                interv = []
+                st.caption("This table has no Intervention column.")
     beneficiary_category = []
+    indicator_dates = []
     if table_key == "beneficiaries":
         with filter_columns[3]:
             beneficiary_category = st.multiselect(
@@ -558,6 +730,13 @@ def render_dashboard(table_key: str):
                 sorted(df["beneficiary_category"].dropna().unique())
                 if "beneficiary_category" in df.columns else [],
                 key=f"d_bc_{table_key}",
+            )
+    elif table_key == "indicators":
+        with filter_columns[3]:
+            date_values = (pd.to_datetime(df["reporting_date"], errors="coerce")
+                           .dropna().dt.strftime("%Y-%m-%d").sort_values().unique().tolist())
+            indicator_dates = st.multiselect(
+                "Reporting Date", date_values, key=f"d_date_{table_key}"
             )
 
     fdf = df.copy()
@@ -570,8 +749,15 @@ def render_dashboard(table_key: str):
         fdf = fdf[fdf["implementer"].isin(impl)]
     if interv:
         fdf = fdf[fdf["intervention"].isin(interv)]
+    if table_key == "indicators" and main_activity:
+        selected_refs = set().union(*(main_activity_map[label] for label in main_activity))
+        fdf = fdf[fdf["activity_reference"].astype(str).isin(selected_refs)]
     if beneficiary_category:
         fdf = fdf[fdf["beneficiary_category"].isin(beneficiary_category)]
+    indicator_period_df = fdf.copy() if table_key == "indicators" else None
+    if table_key == "indicators" and indicator_dates:
+        date_text = pd.to_datetime(fdf["reporting_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        fdf = fdf[date_text.isin(indicator_dates)]
     district_counts = None
     if table_key == "beneficiaries" and "district" in fdf.columns:
         district_counts = (fdf.dropna(subset=["district"])
@@ -619,15 +805,20 @@ def render_dashboard(table_key: str):
                               else fdf["district"].nunique())
             metrics.append(("Districts", district_total))
 
-    mcols = st.columns(min(len(metrics), 5))
-    for (label, value), mc in zip(metrics[:5], mcols):
-        mc.metric(label, value)
+    if table_key != "indicators":
+        mcols = st.columns(min(len(metrics), 5))
+        for (label, value), mc in zip(metrics[:5], mcols):
+            mc.metric(label, value)
 
     if fdf.empty:
         st.warning(f"No {count_label.lower()} match the current filters.")
         return
 
     st.divider()
+
+    if table_key == "indicators":
+        st.markdown("#### Indicator progress summary")
+        _render_indicator_summary_table(fdf, indicator_period_df, date_filtered=bool(indicator_dates))
 
     # pick a sensible measure for the charts
     measure = ("total_workers" if table_key == "coperatives" and "total_workers" in fdf.columns else
@@ -637,7 +828,7 @@ def render_dashboard(table_key: str):
 
     g1, g2 = st.columns(2)
     with g1:
-        if "implementer" in fdf.columns:
+        if "implementer" in fdf.columns and table_key != "indicators":
             if table_key == "coperatives":
                 agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
                        .groupby("implementer", as_index=False)["_workers"].sum()
@@ -671,7 +862,7 @@ def render_dashboard(table_key: str):
             ui.style_iucn_chart(fig)
             st.plotly_chart(fig, use_container_width=True)
     with g2:
-        if "project" in fdf.columns:
+        if "project" in fdf.columns and table_key != "indicators":
             if table_key == "coperatives":
                 agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
                        .groupby("project", as_index=False)["_workers"].sum()

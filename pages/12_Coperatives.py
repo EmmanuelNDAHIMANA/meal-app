@@ -12,7 +12,6 @@ import schemas
 TABLE_KEY = "coperatives"
 CFG = schemas.TABLES[TABLE_KEY]
 
-st.set_page_config(page_title=CFG["title"], page_icon=CFG["icon"], layout="wide")
 auth.require_login()
 
 st.title(f"{CFG['icon']} {CFG['title']}")

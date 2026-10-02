@@ -10,7 +10,6 @@ import auth
 import db
 import filestore
 
-st.set_page_config(page_title="Other Reports", page_icon="📁", layout="wide")
 user = auth.require_login()
 
 st.title("📁 Other Reports")
