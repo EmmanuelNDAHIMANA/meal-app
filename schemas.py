@@ -155,7 +155,7 @@ TABLES = {
     # ------------------------------------------------------------------
     "activities": {
         "table": "activities",
-        "title": "Activities",
+        "title": "Activities Tracker",
         "icon": "📋",
         "fields": [
             PROJECT,
