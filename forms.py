@@ -6,6 +6,8 @@ Schema-driven UI engine reused by all nine data pages:
 """
 from __future__ import annotations
 import datetime as dt
+import hashlib
+import json
 import re
 
 import pandas as pd
@@ -32,6 +34,15 @@ def _ver(table_key: str) -> int:
 
 def _bump(table_key: str):
     st.session_state[f"_ver_{table_key}"] = _ver(table_key) + 1
+
+
+def _fingerprint(value) -> str:
+    """Stable identity for the current form values or uploaded workbook."""
+    if hasattr(value, "getvalue"):
+        payload = value.getvalue()
+    else:
+        payload = json.dumps(value, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _blank(v) -> bool:
@@ -181,7 +192,11 @@ def render_form(table_key: str):
                 vals[fl["col"]] = st.text_input(label, key=key)
 
     st.divider()
-    if st.button("✅ Submit record", type="primary", key=f"{pfx}_submit"):
+    operation_key = f"_single_insert_locked_{table_key}"
+    has_new_input = any(not _blank(value) for value in vals.values())
+    button_disabled = st.session_state.get(operation_key, False) and not has_new_input
+    if st.button("✅ Submit record", type="primary", key=f"{pfx}_submit",
+                 disabled=button_disabled):
         username = st.session_state["user"]["username"]
 
         # Save any uploaded files first, replacing the widget's UploadedFile
@@ -217,6 +232,7 @@ def render_form(table_key: str):
             st.error(f"Save failed: {e}")
             return
         st.success("Record saved.")
+        st.session_state[operation_key] = True
         _bump(table_key)
         st.rerun()
 
@@ -362,6 +378,7 @@ def render_upload(table_key: str):
     up = st.file_uploader("Upload the filled template (.xlsx)", type=["xlsx"], key=f"up_{table_key}")
     if up is None:
         return
+    upload_fingerprint = _fingerprint(up)
 
     try:
         xls = pd.ExcelFile(up)
@@ -447,13 +464,16 @@ def render_upload(table_key: str):
     with st.expander(f"Preview the {len(good)} valid row(s)"):
         st.dataframe(pd.DataFrame(good), use_container_width=True)
 
-    if st.button(f"⬆️ Insert {len(good)} record(s)", type="primary", key=f"ins_{table_key}"):
+    inserted_key = f"_last_bulk_insert_{table_key}"
+    if st.button(f"⬆️ Insert {len(good)} record(s)", type="primary", key=f"ins_{table_key}",
+                 disabled=st.session_state.get(inserted_key) == upload_fingerprint):
         try:
             out = pd.DataFrame(good)
             out["created_by"] = st.session_state["user"]["username"]
             out["source"] = "bulk"
             db.insert_dataframe(out, cfg["table"])
             st.success(f"Inserted {len(good)} record(s) into {cfg['title']}.")
+            st.session_state[inserted_key] = upload_fingerprint
             st.balloons()
         except Exception as e:
             st.error(f"Insert failed: {e}")
