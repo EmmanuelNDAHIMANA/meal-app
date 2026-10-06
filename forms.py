@@ -570,44 +570,64 @@ def _render_indicator_summary_table(
     all_rows = period_source_df.copy()
     chosen_rows = selected_df.copy()
     for frame in (all_rows, chosen_rows):
+        if "indicator_sub_indicator" not in frame.columns:
+            frame["indicator_sub_indicator"] = (
+                frame["indicator"].fillna("").astype(str).str.strip()
+                + ":"
+                + frame["sub_indicator"].fillna("").astype(str).str.strip()
+            )
+        frame["_display_indicator"] = frame["indicator_sub_indicator"].fillna("").astype(str).str.strip()
         frame["_report_date"] = pd.to_datetime(frame["reporting_date"], errors="coerce").dt.normalize()
         frame["_actual_num"] = numeric(frame["actual_value"])
         frame["_target_num"] = numeric(frame["lop_target"])
         frame["_year_target_num"] = numeric(frame["target_year"])
 
     rows_html = []
-    indicators = sorted(chosen_rows["indicator"].dropna().astype(str).unique(), key=str.casefold)
-    for indicator in indicators:
-        data = all_rows[all_rows["indicator"].astype(str) == indicator]
-        selected = chosen_rows[chosen_rows["indicator"].astype(str) == indicator]
+    group_cols = ["_display_indicator", "indicator_type", "unit"]
+    groups = chosen_rows[group_cols].fillna("").drop_duplicates()
+    for _, group in groups.iterrows():
+        indicator = str(group["_display_indicator"])
+        data_mask = pd.Series(True, index=all_rows.index)
+        selected_mask = pd.Series(True, index=chosen_rows.index)
+        for col in group_cols:
+            data_mask &= all_rows[col].fillna("").astype(str).eq(str(group[col]))
+            selected_mask &= chosen_rows[col].fillna("").astype(str).eq(str(group[col]))
+        data = all_rows[data_mask]
+        selected = chosen_rows[selected_mask]
         if data.empty:
             continue
         special = any(term in indicator.casefold() for term in special_terms)
         implementers = sorted(data["implementer"].dropna().astype(str).unique(), key=str.casefold)
 
         # LoP values ignore the Reporting Date selection, matching the DAX measure.
-        total_target = sum(mean_or_zero(data.loc[data["implementer"] == impl, "_target_num"])
-                           for impl in implementers)
+        total_target = mean_or_zero(data["_target_num"])
         total_actual = (mean_or_zero(data["_actual_num"]) if special
                         else sum_or_zero(data["_actual_num"]))
 
         # Without a date selection, show the latest reporting date with a target/actual.
-        max_target_date = data.loc[data["_year_target_num"] > 0, "_report_date"].max()
-        if date_filtered:
+        target_date_source = selected if date_filtered else data
+        max_target_date = target_date_source.loc[
+            target_date_source["_year_target_num"] > 0, "_report_date"
+        ].max()
+        if special and date_filtered:
             yearly_target_rows = selected
         elif pd.isna(max_target_date):
             yearly_target_rows = data.iloc[0:0]
         else:
-            yearly_target_rows = data[data["_report_date"] == max_target_date]
-        target_year = sum(mean_or_zero(yearly_target_rows.loc[
-            yearly_target_rows["implementer"] == impl, "_year_target_num"
-        ]) for impl in implementers)
+            yearly_target_rows = target_date_source[
+                target_date_source["_report_date"] == max_target_date
+            ]
+        target_year = (mean_or_zero(yearly_target_rows["_year_target_num"]) if special
+                       else sum_or_zero(yearly_target_rows["_year_target_num"]))
 
-        if date_filtered:
+        actual_date_source = selected if date_filtered else data
+        max_actual_date = actual_date_source.loc[
+            actual_date_source["_actual_num"] > 0, "_report_date"
+        ].max()
+        if special and date_filtered:
             yearly_actual_rows = selected
         else:
-            max_actual_date = data.loc[data["_actual_num"] > 0, "_report_date"].max()
-            yearly_actual_rows = (data[data["_report_date"] == max_actual_date]
+            yearly_actual_rows = (actual_date_source[actual_date_source["_report_date"] == max_actual_date]
                                   if not pd.isna(max_actual_date) else data.iloc[0:0])
         yearly_actual = (mean_or_zero(yearly_actual_rows["_actual_num"]) if special
                          else sum_or_zero(yearly_actual_rows["_actual_num"]))
@@ -631,13 +651,13 @@ def _render_indicator_summary_table(
             chips.append(
                 f'<span class="chip" style="background:{bg};color:{fg}">{html.escape(implementer)}</span>'
             )
-        unit_values = data["unit"].dropna().astype(str)
-        unit = html.escape(max(unit_values) if not unit_values.empty else "")
+        unit = html.escape(str(group["unit"]))
+        indicator_type = html.escape(str(group["indicator_type"]))
         rows_html.append(
             "<tr class='data-row'>"
             f'<td class="indicator">● {html.escape(indicator)}</td>'
-            f"<td>{unit}</td><td>{''.join(chips)}</td>"
-            f"<td>{total_target:,.0f}</td><td class='actual'>{total_actual:,.0f}</td>"
+            f"<td>{unit}</td><td>{total_target:,.0f}</td><td class='actual'>{total_actual:,.0f}</td>"
+            f"<td>{''.join(chips)}</td><td><span class='chip' style='background:#eef4ff;color:#2b579a'>{indicator_type}</span></td>"
             f'<td><div class="progress"><div class="bar" style="width:{lop_width:.1f}%;background:{color}"></div></div>'
             f'<span style="color:{color};font-weight:600">{pct_text}</span></td>'
             f'<td><div class="pie" style="background:conic-gradient({yearly_color} 0deg {yearly_degrees:.1f}deg,#eee {yearly_degrees:.1f}deg 360deg)"></div>'
@@ -660,7 +680,7 @@ def _render_indicator_summary_table(
     </style>
     <input id="searchBox" type="text" placeholder="Search indicator..." oninput="filterTable()">
     <div class="table-wrap"><table><thead><tr>
-      <th>INDICATOR</th><th>UNIT</th><th>IMPLEMENTER</th><th>LoP TARGET</th><th>ACTUAL</th><th>LoP PROGRESS</th><th>YEARLY PROGRESS</th>
+      <th>INDICATOR NAME</th><th>UNIT</th><th>LoP TARGET</th><th>ACTUAL</th><th>RESPONSIBLE</th><th>INDICATOR TYPE</th><th>LoP PROGRESS</th><th>YEARLY PROGRESS</th>
     </tr></thead><tbody id="indicatorRows">__ROWS__</tbody></table></div>
     <script>
       function filterTable(){const q=document.getElementById('searchBox').value.toLowerCase();
@@ -669,6 +689,135 @@ def _render_indicator_summary_table(
     """.replace("__ROWS__", "".join(rows_html))
     height = min(740, max(220, 100 + len(rows_html) * 48))
     components.html(table_html, height=height, scrolling=True)
+
+
+def _render_activity_progress_charts(activity_df: pd.DataFrame):
+    """Show activity execution counts and completion rates by reporting quarter."""
+    chart_df = activity_df.copy()
+    chart_df["_progress"] = (
+        chart_df["execution_progress"].fillna("Unknown").astype(str).str.strip()
+        .replace("", "Unknown")
+    )
+    chart_df["_completed"] = chart_df["_progress"].str.casefold().eq("completed")
+    chart_df["_quarter"] = pd.to_datetime(
+        chart_df["reporting_date"], errors="coerce"
+    ).dt.to_period("Q").map(
+        lambda period: f"{period.year}-Q{period.quarter}" if not pd.isna(period) else None
+    )
+
+    main_df = chart_df[chart_df["main_activity"].fillna("").astype(str).str.strip().ne("")]
+    sub_df = chart_df[chart_df["sub_activity"].fillna("").astype(str).str.strip().ne("")]
+
+    sub_counts = (sub_df.groupby("main_activity", as_index=False)
+                  .agg(completed_sub_activities=("_completed", "sum"),
+                       total_sub_activities=("sub_activity", "size")))
+    main_dates = (main_df.assign(_end_date=pd.to_datetime(main_df["end_date"], errors="coerce"))
+                  .groupby("main_activity")["_end_date"].max())
+    main_summary = (main_df[["main_activity"]].drop_duplicates()
+                    .merge(sub_counts, on="main_activity", how="left"))
+    main_summary["completed_sub_activities"] = main_summary["completed_sub_activities"].fillna(0)
+    main_summary["total_sub_activities"] = main_summary["total_sub_activities"].fillna(0)
+    main_summary["progress"] = main_summary["completed_sub_activities"].div(
+        main_summary["total_sub_activities"].where(main_summary["total_sub_activities"].ne(0))
+    ).fillna(0)
+    main_summary["end_date"] = main_summary["main_activity"].map(main_dates)
+
+    today = pd.Timestamp(dt.date.today())
+
+    def activity_status(row):
+        progress = row["progress"]
+        end_date = row["end_date"]
+        if progress == 1:
+            return "Completed"
+        if pd.isna(end_date):
+            return "End Date Missing"
+        if progress == 0:
+            return "Not Started and Delayed" if end_date >= today else "Not Started"
+        return "Started Progress On Track" if end_date >= today else "Started Progress Delayed"
+
+    main_summary["status"] = main_summary.apply(activity_status, axis=1)
+
+    st.markdown("#### Activity execution progress")
+    pie_cols = st.columns(2)
+    with pie_cols[0]:
+        if main_summary.empty:
+            st.info("No Main Activities in the current filter.")
+        else:
+            counts = (main_summary.groupby("status", as_index=False).size()
+                      .rename(columns={"size": "main_activities"}))
+            fig = px.pie(
+                counts, names="status", values="main_activities", hole=0.42,
+                title="Main Activities by Execution Progress", color_discrete_sequence=ui.IUCN_PALETTE,
+            )
+            fig.update_traces(textinfo="label+value+percent", textposition="inside")
+            fig.update_layout(margin=dict(t=55, b=0), legend_title_text="Main Activity Status")
+            ui.style_iucn_chart(fig)
+            st.plotly_chart(fig, use_container_width=True)
+    with pie_cols[1]:
+        if sub_df.empty:
+            st.info("No Sub Activities in the current filter.")
+        else:
+            counts = (sub_df.groupby("_progress", as_index=False).size()
+                      .rename(columns={"size": "sub_activities"}))
+            fig = px.pie(
+                counts, names="_progress", values="sub_activities", hole=0.42,
+                title="Sub Activities by Execution Progress", color_discrete_sequence=ui.IUCN_PALETTE,
+            )
+            fig.update_traces(textinfo="label+value+percent", textposition="inside")
+            fig.update_layout(margin=dict(t=55, b=0), legend_title_text="Execution Progress")
+            ui.style_iucn_chart(fig)
+            st.plotly_chart(fig, use_container_width=True)
+
+    if not main_summary.empty:
+        st.caption("Main Activity progress = completed subactivities ÷ all corresponding subactivities.")
+        display_summary = main_summary[[
+            "main_activity", "completed_sub_activities", "total_sub_activities", "progress", "status"
+        ]].rename(columns={
+            "main_activity": "Main Activity",
+            "completed_sub_activities": "Completed Sub Activities",
+            "total_sub_activities": "Total Sub Activities",
+            "progress": "Progress %",
+            "status": "Status",
+        })
+        display_summary["Progress %"] = display_summary["Progress %"].map(lambda value: f"{value:.0%}")
+        st.dataframe(display_summary, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Completed activities by reporting quarter")
+    quarter_cols = st.columns(2)
+    main_quarterly = (sub_df.dropna(subset=["_quarter"])
+                      .groupby(["_quarter", "main_activity"], as_index=False)
+                      .agg(completed=("_completed", "sum"), total=("_completed", "size")))
+    if not main_quarterly.empty:
+        main_quarterly["_activity_pct"] = main_quarterly["completed"] / main_quarterly["total"] * 100
+        main_quarterly = (main_quarterly.groupby("_quarter", as_index=False)
+                          .agg(completed_pct=("_activity_pct", "mean"),
+                               activities=("main_activity", "nunique")))
+    sub_quarterly = (sub_df.dropna(subset=["_quarter"]).groupby("_quarter", as_index=False).agg(
+        completed=("_completed", "sum"), total=("_completed", "size")
+    ))
+    if not sub_quarterly.empty:
+        sub_quarterly["completed_pct"] = sub_quarterly["completed"] / sub_quarterly["total"] * 100
+
+    for column, quarterly, title, hover_data in (
+        (quarter_cols[0], main_quarterly, "Average Main Activity Completion Rate", {"activities": True}),
+        (quarter_cols[1], sub_quarterly, "Sub Activity Completion Rate", {"completed": True, "total": True}),
+    ):
+        with column:
+            if quarterly.empty:
+                st.info(f"No reporting quarter available for {title.lower()}.")
+                continue
+            fig = px.bar(
+                quarterly, x="_quarter", y="completed_pct", title=title,
+                text=quarterly["completed_pct"].map(lambda value: f"{value:.0f}%"),
+                color_discrete_sequence=ui.IUCN_PALETTE,
+                hover_data={**hover_data, "completed_pct": ":.1f"},
+            )
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            fig.update_yaxes(title="Completed", ticksuffix="%", range=[0, 100])
+            fig.update_xaxes(title="Year-Quarter", categoryorder="array", categoryarray=sorted(quarterly["_quarter"]))
+            fig.update_layout(margin=dict(t=55, b=0), showlegend=False)
+            ui.style_iucn_chart(fig)
+            st.plotly_chart(fig, use_container_width=True)
 
 
 def render_dashboard(table_key: str):
@@ -690,39 +839,77 @@ def render_dashboard(table_key: str):
         st.info(f"No {count_label.lower()} in this table yet.")
         return
 
-    filter_columns = st.columns(4 if table_key in ("beneficiaries", "indicators") else 3)
-    f1, f2, f3 = filter_columns[:3]
-    with f1:
-        proj = st.multiselect("Project", sorted(df["project"].dropna().unique())
-                              if "project" in df else [], key=f"d_p_{table_key}")
-    with f2:
-        impl = st.multiselect("Implementer", sorted(df["implementer"].dropna().unique())
-                              if "implementer" in df else [], key=f"d_i_{table_key}")
-    main_activity_map = {}
+    indicator_type_filter = []
+    indicator_filter = []
+    proj = []
+    main_activity = []
     interv = []
+    beneficiary_category = []
+    indicator_dates = []
+    activity_quarters = []
+    activity_codes = []
     if table_key == "indicators":
-        activity_source = df.copy()
-        if proj:
-            activity_source = activity_source[activity_source["project"].isin(proj)]
-        if impl:
-            activity_source = activity_source[activity_source["implementer"].isin(impl)]
-        main_activity_map = _indicator_main_activity_options(activity_source)
-        with f3:
-            main_activity = st.multiselect(
-                "Main Activity", list(main_activity_map), key=f"d_main_activity_{table_key}"
+        # Mirror the Power BI calculated column used by the summary table and
+        # Indicator slicer: Indicator & ":" & Sub Indicator.
+        df["indicator_sub_indicator"] = (
+            df["indicator"].fillna("").astype(str).str.strip()
+            + ":"
+            + df["sub_indicator"].fillna("").astype(str).str.strip()
+        )
+        filter_columns = st.columns(4)
+        reporting_periods = pd.to_datetime(df["reporting_date"], errors="coerce").dt.to_period("Q")
+        date_values = sorted(
+            {f"{period.year}-Q{period.quarter}" for period in reporting_periods.dropna()},
+            key=lambda value: (int(value[:4]), int(value[-1])),
+        )
+        with filter_columns[0]:
+            indicator_dates = st.multiselect("Reporting Date", date_values, key=f"d_date_{table_key}")
+        with filter_columns[1]:
+            impl = st.multiselect("Implementer", sorted(df["implementer"].dropna().astype(str).unique(), key=str.casefold), key=f"d_i_{table_key}")
+        with filter_columns[2]:
+            indicator_type_filter = st.multiselect("Indicator Type", sorted(df["indicator_type"].dropna().astype(str).unique(), key=str.casefold), key=f"d_type_{table_key}")
+        with filter_columns[3]:
+            indicator_filter = st.multiselect("Indicator", sorted(df["indicator_sub_indicator"].dropna().astype(str).unique(), key=str.casefold), key=f"d_indicator_{table_key}")
+    elif table_key == "activities":
+        df["activity_code"] = df["main_activity"].fillna("").astype(str).str.strip().str.slice(0, 5)
+        filter_columns = st.columns(3)
+        reporting_periods = pd.to_datetime(df["reporting_date"], errors="coerce").dt.to_period("Q")
+        quarter_values = sorted(
+            {f"{period.year}-Q{period.quarter}" for period in reporting_periods.dropna()},
+            key=lambda value: (int(value[:4]), int(value[-1])),
+        )
+        with filter_columns[0]:
+            activity_quarters = st.multiselect(
+                "Reporting Date (Year-Quarter)", quarter_values, key=f"d_date_{table_key}"
+            )
+        with filter_columns[1]:
+            impl = st.multiselect(
+                "Implementer",
+                sorted(df["implementer"].dropna().astype(str).unique(), key=str.casefold),
+                key=f"d_i_{table_key}",
+            )
+        with filter_columns[2]:
+            activity_codes = st.multiselect(
+                "Activity Code",
+                sorted(
+                    [code for code in df["activity_code"].dropna().astype(str).unique() if code.strip()],
+                    key=str.casefold,
+                ),
+                key=f"d_activity_code_{table_key}",
             )
     else:
-        main_activity = []
+        filter_columns = st.columns(4 if table_key == "beneficiaries" else 3)
+        f1, f2, f3 = filter_columns[:3]
+        with f1:
+            proj = st.multiselect("Project", sorted(df["project"].dropna().unique()) if "project" in df else [], key=f"d_p_{table_key}")
+        with f2:
+            impl = st.multiselect("Implementer", sorted(df["implementer"].dropna().unique()) if "implementer" in df else [], key=f"d_i_{table_key}")
         with f3:
             if "intervention" in df.columns:
                 pool = df[df["implementer"].isin(impl)] if impl else df
-                interv = st.multiselect("Intervention", sorted(pool["intervention"].dropna().unique()),
-                                        key=f"d_v_{table_key}")
+                interv = st.multiselect("Intervention", sorted(pool["intervention"].dropna().unique()), key=f"d_v_{table_key}")
             else:
-                interv = []
                 st.caption("This table has no Intervention column.")
-    beneficiary_category = []
-    indicator_dates = []
     if table_key == "beneficiaries":
         with filter_columns[3]:
             beneficiary_category = st.multiselect(
@@ -730,13 +917,6 @@ def render_dashboard(table_key: str):
                 sorted(df["beneficiary_category"].dropna().unique())
                 if "beneficiary_category" in df.columns else [],
                 key=f"d_bc_{table_key}",
-            )
-    elif table_key == "indicators":
-        with filter_columns[3]:
-            date_values = (pd.to_datetime(df["reporting_date"], errors="coerce")
-                           .dropna().dt.strftime("%Y-%m-%d").sort_values().unique().tolist())
-            indicator_dates = st.multiselect(
-                "Reporting Date", date_values, key=f"d_date_{table_key}"
             )
 
     fdf = df.copy()
@@ -747,17 +927,29 @@ def render_dashboard(table_key: str):
         fdf = fdf[fdf["project"].isin(proj)]
     if impl:
         fdf = fdf[fdf["implementer"].isin(impl)]
+    if table_key == "activities" and activity_quarters:
+        date_periods = pd.to_datetime(fdf["reporting_date"], errors="coerce").dt.to_period("Q")
+        period_text = date_periods.map(
+            lambda period: f"{period.year}-Q{period.quarter}" if not pd.isna(period) else None
+        )
+        fdf = fdf[period_text.isin(activity_quarters)]
+    if table_key == "activities" and activity_codes:
+        fdf = fdf[fdf["activity_code"].astype(str).isin(activity_codes)]
     if interv:
         fdf = fdf[fdf["intervention"].isin(interv)]
-    if table_key == "indicators" and main_activity:
-        selected_refs = set().union(*(main_activity_map[label] for label in main_activity))
-        fdf = fdf[fdf["activity_reference"].astype(str).isin(selected_refs)]
+    if table_key == "indicators" and indicator_type_filter:
+        fdf = fdf[fdf["indicator_type"].isin(indicator_type_filter)]
+    if table_key == "indicators" and indicator_filter:
+        fdf = fdf[fdf["indicator_sub_indicator"].isin(indicator_filter)]
     if beneficiary_category:
         fdf = fdf[fdf["beneficiary_category"].isin(beneficiary_category)]
     indicator_period_df = fdf.copy() if table_key == "indicators" else None
     if table_key == "indicators" and indicator_dates:
-        date_text = pd.to_datetime(fdf["reporting_date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        fdf = fdf[date_text.isin(indicator_dates)]
+        date_periods = pd.to_datetime(fdf["reporting_date"], errors="coerce").dt.to_period("Q")
+        period_text = date_periods.map(
+            lambda period: f"{period.year}-Q{period.quarter}" if not pd.isna(period) else None
+        )
+        fdf = fdf[period_text.isin(indicator_dates)]
     district_counts = None
     if table_key == "beneficiaries" and "district" in fdf.columns:
         district_counts = (fdf.dropna(subset=["district"])
@@ -805,7 +997,7 @@ def render_dashboard(table_key: str):
                               else fdf["district"].nunique())
             metrics.append(("Districts", district_total))
 
-    if table_key != "indicators":
+    if table_key not in ("indicators", "activities"):
         mcols = st.columns(min(len(metrics), 5))
         for (label, value), mc in zip(metrics[:5], mcols):
             mc.metric(label, value)
@@ -819,6 +1011,8 @@ def render_dashboard(table_key: str):
     if table_key == "indicators":
         st.markdown("#### Indicator progress summary")
         _render_indicator_summary_table(fdf, indicator_period_df, date_filtered=bool(indicator_dates))
+    elif table_key == "activities":
+        _render_activity_progress_charts(fdf)
 
     # pick a sensible measure for the charts
     measure = ("total_workers" if table_key == "coperatives" and "total_workers" in fdf.columns else
@@ -828,7 +1022,7 @@ def render_dashboard(table_key: str):
 
     g1, g2 = st.columns(2)
     with g1:
-        if "implementer" in fdf.columns and table_key != "indicators":
+        if "implementer" in fdf.columns and table_key not in ("indicators", "activities"):
             if table_key == "coperatives":
                 agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
                        .groupby("implementer", as_index=False)["_workers"].sum()
@@ -862,7 +1056,7 @@ def render_dashboard(table_key: str):
             ui.style_iucn_chart(fig)
             st.plotly_chart(fig, use_container_width=True)
     with g2:
-        if "project" in fdf.columns and table_key != "indicators":
+        if "project" in fdf.columns and table_key not in ("indicators", "activities"):
             if table_key == "coperatives":
                 agg = (fdf.assign(_workers=pd.to_numeric(fdf["total_workers"], errors="coerce"))
                        .groupby("project", as_index=False)["_workers"].sum()
